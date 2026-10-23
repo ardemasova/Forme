@@ -1,0 +1,126 @@
+import { chromium } from "playwright";
+const BASE = process.env.BASE ?? "http://localhost:3000";
+const OUT = process.env.OUT ?? "/tmp/e2e";
+const W = +(process.env.W ?? 1440), H = +(process.env.H ?? 900);
+import fs from "node:fs"; fs.mkdirSync(OUT, { recursive: true });
+const b = await chromium.launch({ ...(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}) });
+const ctx = await b.newContext({ viewport: { width: W, height: H } });
+const p = await ctx.newPage(); p.setDefaultTimeout(8000);
+const errs = [];
+p.on("pageerror", e => errs.push("PAGEERR " + e.message));
+p.on("console", m => { if (m.type() === "error" && !/Failed to load resource/.test(m.text())) errs.push(m.text()); });
+let n = 0; const shot = async (name) => { await p.waitForTimeout(700); await p.screenshot({ path: `${OUT}/${String(n++).padStart(2,"0")}-${name}.png` }); };
+const step = async (label, fn) => { try { await fn(); console.log("✓", label); } catch (e) { console.log("✗", label, e.message.split("\n")[0]); await shot("FAIL-" + label.replace(/\W+/g,"_")); } };
+
+await p.goto(BASE + "/explore", { waitUntil: "networkidle" });
+await shot("studio-start");
+await step("atmosphere", async () => { await p.getByRole("radio", { name: /Calidez silenciosa/ }).first().click(); await p.getByRole("button", { name: "Luz suave" }).waitFor(); });
+await shot("aspects");
+await step("aspects", async () => {
+  await p.getByRole("button", { name: "Materiales naturales" }).click();
+  await p.getByRole("button", { name: "Luz suave" }).click();
+  await p.getByPlaceholder(/Por ejemplo: la luz/).fill("me agobia el blanco frío y el brillo");
+  await p.getByRole("button", { name: /^Continuar/ }).click();
+  await p.getByText("Hipótesis", { exact: true }).first().waitFor();
+});
+await shot("hypothesis");
+await step("hypothesis", async () => { await p.getByRole("radiogroup", { name: "Comprobación de hipótesis" }).getByRole("radio").first().click(); await p.getByRole("radiogroup", { name: "Detalle" }).waitFor(); });
+await shot("refinement");
+await step("refinement", async () => { await p.getByRole("radiogroup", { name: "Detalle" }).getByRole("radio").first().click(); await p.getByRole("button", { name: /Encaja, sigamos/ }).waitFor(); });
+await shot("profile");
+await step("profile why + confirm", async () => {
+  await p.getByRole("button", { name: /Ver qué ha influido/ }).click();
+  await shot("profile-why");
+  await p.getByRole("button", { name: /Encaja, sigamos/ }).click();
+  await p.getByRole("button", { name: /Ver mi moodboard/ }).waitFor();
+});
+await shot("feedback");
+await step("feedback actions", async () => {
+  const firstTitle = await p.locator("li.border.bg-paper p.font-display").first().textContent();
+  await p.getByRole("button", { name: /¿Por qué me lo propones/ }).first().click();
+  await shot("feedback-why");
+  await p.getByRole("button", { name: "Me gusta" }).first().click();
+  await p.waitForTimeout(600);
+  const after = await p.locator("li.border.bg-paper p.font-display").first().textContent();
+  console.log("   first card before/after like:", firstTitle, "→", after);
+  await p.getByRole("button", { name: "No encaja" }).first().click();
+  await p.waitForTimeout(600);
+  await p.getByRole("button", { name: "Guardar" }).first().click();
+  await p.waitForTimeout(600);
+  await p.getByRole("button", { name: "Me gusta" }).first().click();
+  await p.waitForTimeout(600);
+});
+await shot("feedback-after");
+await step("to moodboard", async () => { await p.getByRole("button", { name: /Ver mi moodboard/ }).click(); await p.getByRole("button", { name: /Datos del proyecto/ }).waitFor(); });
+await shot("moodboard");
+await step("moodboard remove", async () => {
+  const before = await p.locator("ul li.group").count();
+  await p.getByRole("button", { name: /del tablero/ }).first().click({ force: true });
+  await p.waitForTimeout(700);
+  console.log("   board items", before, "→", await p.locator("ul li.group").count());
+  await p.getByRole("button", { name: /Datos del proyecto/ }).click();
+});
+await shot("project");
+await step("project form", async () => {
+  await p.getByRole("radio", { name: "Salón" }).click();
+  await p.getByLabel("Superficie en metros cuadrados").fill("28");
+  await p.getByRole("radio", { name: "5.000 – 15.000 €" }).click();
+  await p.getByRole("button", { name: "Teletrabajo" }).click();
+  await p.getByRole("button", { name: /Preparar el brief/ }).click();
+  await p.getByRole("link", { name: /Ver el brief/ }).waitFor();
+});
+await shot("brief-step");
+await step("free text", async () => {
+  await p.locator("#studio-input").fill("Me encanta la cerámica, pero nada de metal");
+  await p.keyboard.press("Enter");
+  await p.getByText(/Anotado: sumo cerámica artesanal/).waitFor();
+});
+await step("reload persists", async () => {
+  await p.reload({ waitUntil: "networkidle" });
+  await p.getByRole("link", { name: /Ver el brief/ }).waitFor();
+  const ls = await p.evaluate(() => Object.keys(localStorage).filter(k=>k.startsWith("forme")).map(k=>k+":"+localStorage.getItem(k).length));
+  console.log("   localStorage:", ls.join(", "));
+});
+await step("brief page", async () => { await p.goto(BASE + "/brief", { waitUntil: "networkidle" }); await p.getByText("Preguntas abiertas").first().waitFor(); });
+await shot("brief-page-top");
+await p.screenshot({ path: `${OUT}/brief-full.png`, fullPage: true });
+await step("telegram", async () => {
+  await p.goto(BASE + "/telegram-demo", { waitUntil: "networkidle" });
+  await p.getByText(/He notado que te atraen/).waitFor();
+  await shot("telegram");
+  await p.getByRole("button", { name: /^Guardar «/ }).first().click();
+  await p.getByText(/Guardado en tu moodboard/).last().waitFor();
+  await p.getByRole("button", { name: /^¿Por qué «/ }).first().click();
+  await p.getByRole("button", { name: "Algo más atrevido" }).last().click();
+  await p.locator("#tg-input").fill("odio el gris");
+  await p.keyboard.press("Enter");
+  await p.waitForTimeout(800);
+});
+await shot("telegram-after");
+await step("crm", async () => {
+  await p.goto(BASE + "/dashboard", { waitUntil: "networkidle" });
+  await p.getByText("Tú (este navegador)").first().waitFor();
+  console.log("   rows:", await p.locator("tbody tr").count());
+  await shot("crm");
+  await p.getByPlaceholder(/Buscar cliente/).fill("lucía");
+  console.log("   rows after search:", await p.locator("tbody tr").count());
+  await p.getByPlaceholder(/Buscar cliente/).fill("");
+  await p.locator("tbody tr").first().click();
+  await p.getByRole("tab", { name: "Historial" }).click();
+  await shot("crm-detail-history");
+  await p.getByRole("tab", { name: "Brief" }).click();
+  await shot("crm-detail-brief");
+});
+await step("edit earlier answer", async () => {
+  await p.goto(BASE + "/explore", { waitUntil: "networkidle" });
+  await p.getByRole("button", { name: /Atmósfera/ }).first().click();
+  await p.getByText(/Estás revisando/).waitFor();
+  await shot("review-atmosphere");
+  await p.getByRole("radio", { name: /Eclecticismo suave/ }).first().click();
+  await p.waitForTimeout(800);
+  const max = await p.evaluate(() => { const s = JSON.parse(localStorage.getItem("forme:v1:projects")); const k = localStorage.getItem("forme:v1:active").replaceAll('"',''); return [s[k].currentStep, s[k].maxStep, s[k].answers.hypothesis?.id ?? null]; });
+  console.log("   after change current/max/hyp:", max);
+});
+await shot("after-change");
+console.log("ERRORS:", errs.length ? errs.slice(0, 10) : "none");
+await b.close();
